@@ -1,0 +1,28 @@
+Scripts/install-launch-agent.sh
+  s_2d5144c9ade14a::t_46c3b9b3daf107 34
+  s_2d5144c9ade14a::t_bc5e5d582496b2 14-20
+README.md
+  s_2d5144c9ade14a::t_e47c85d6a353f2 85,87-88,110,112-116,119-125,261-267
+  s_2d5144c9ade14a::t_3c916a3d9d4073 40-41,44,74,77-78,145,223-224,245
+Sources/ssh-image-paste-daemon/main.swift
+  s_2d5144c9ade14a::t_0fcbaf9f9d3e88 60-61,493
+  s_2d5144c9ade14a::t_29835d9562e7e0 8,10,56-57,86-96,103,135-138,159-168,170,184-198,229-265,316,320-323,373-376,380,387-402,426-461,486,489-490,492,494
+BLOG.md
+  s_2d5144c9ade14a::t_6915291a8deb93 95,103,108,120
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.10",
+  "base_commit_sha": "0f3ce7cd987da5a66ed1f24757fbdd49d7155b57",
+  "prompts": {},
+  "sessions": {
+    "s_2d5144c9ade14a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ef8b3-199f-7ad0-ad06-205feb662010",
+        "model": "gpt-5.5"
+      },
+      "human_author": "ripley <ripley_l@outlook.com>"
+    }
+  }
+}
