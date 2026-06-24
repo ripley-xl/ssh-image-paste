@@ -5,9 +5,9 @@ import Foundation
 import SSHImagePasteCore
 
 struct DaemonOptions {
-    var interval: TimeInterval = 0.75
+    var interval: TimeInterval = 0.2
     var remoteHelperPath: String? = "~/.local/bin/ssh-clipboard-image-remote.py"
-    var copyRemotePathToLocalClipboard = true
+    var copyRemotePathToLocalClipboard = false
     var remoteClipboard = true
     var ttyInject = false
     var pasteIntercept = false
@@ -53,8 +53,12 @@ func parseOptions(_ arguments: [String]) throws -> DaemonOptions {
             options.remoteHelperPath = try requireValue(for: arg)
         case "--no-remote-helper":
             options.remoteHelperPath = nil
+        case "--local-path-clipboard":
+            options.copyRemotePathToLocalClipboard = true
         case "--no-local-path-clipboard":
             options.copyRemotePathToLocalClipboard = false
+        case "--remote-clipboard":
+            options.remoteClipboard = true
         case "--no-remote-clipboard":
             options.remoteClipboard = false
         case "--tty-inject":
@@ -79,13 +83,24 @@ func parseOptions(_ arguments: [String]) throws -> DaemonOptions {
 }
 
 final class ClipboardSyncDaemon: @unchecked Sendable {
+    private enum LocalPathClipboardMode {
+        case configured
+        case temporaryForPaste(PasteboardSnapshot)
+    }
+
+    private struct SyncCache {
+        var fingerprint: String
+        var remotePaths: [String]
+        var uploadedSessionKeys: Set<String>
+    }
+
     private let options: DaemonOptions
     private let materializer = ClipboardImageMaterializer()
     private let uploader = RemoteUploader()
     private let writer = RemoteClipboardWriter()
     private let injector = TerminalPasteInjector()
     private var lastChangeCount = NSPasteboard.general.changeCount
-    private var lastSyncedFingerprint: String?
+    private var lastSyncCache: SyncCache?
     private var eventTap: CFMachPort?
     private var suppressNextCommandVPaste = false
 
@@ -117,7 +132,10 @@ final class ClipboardSyncDaemon: @unchecked Sendable {
     }
 
     @discardableResult
-    private func syncCurrentClipboard(reason: String) -> Bool {
+    private func syncCurrentClipboard(
+        reason: String,
+        localPathClipboardMode: LocalPathClipboardMode = .configured
+    ) -> Bool {
         let files: [ClipboardMaterializedFile]
         do {
             files = try materializer.materializeFilesFromGeneralPasteboard()
@@ -131,11 +149,6 @@ final class ClipboardSyncDaemon: @unchecked Sendable {
         defer { materializer.cleanupTemporaryFiles(files) }
 
         let fingerprint = clipboardFingerprint(files)
-        guard fingerprint != lastSyncedFingerprint else {
-            log("ignored duplicate clipboard payload")
-            return false
-        }
-
         let activeSessions = SSHSessionDetector.detectActiveInteractiveSSHSessions()
         guard !activeSessions.isEmpty else {
             log("no active ssh sessions for \(reason)")
@@ -143,9 +156,18 @@ final class ClipboardSyncDaemon: @unchecked Sendable {
         }
 
         let localURLs = files.map(\.url)
-        let sharedRemotePaths = remotePaths(for: localURLs)
+        let cachedResult = lastSyncCache?.fingerprint == fingerprint ? lastSyncCache : nil
+        let sharedRemotePaths = cachedResult?.remotePaths ?? remotePaths(for: localURLs)
+        let sessionsNeedingUpload = activeSessions.filter { active in
+            !(cachedResult?.uploadedSessionKeys.contains(sessionCacheKey(active.session)) ?? false)
+        }
+
+        if sessionsNeedingUpload.isEmpty {
+            log("reused cached remote path(s) for \(reason)")
+        }
+
         var uploadedSessions: [(active: ActiveSSHSession, remotePaths: [String])] = []
-        for active in activeSessions {
+        for active in sessionsNeedingUpload {
             do {
                 let remotePaths = try uploader.upload(
                     localURLs,
@@ -159,18 +181,21 @@ final class ClipboardSyncDaemon: @unchecked Sendable {
             }
         }
 
-        guard !uploadedSessions.isEmpty else { return false }
+        let uploadedSessionKeys = Set(uploadedSessions.map { sessionCacheKey($0.active.session) })
+        let knownSessionKeys = (cachedResult?.uploadedSessionKeys ?? []).union(uploadedSessionKeys)
+        let coveredActiveSessions = activeSessions.filter { knownSessionKeys.contains(sessionCacheKey($0.session)) }
+        guard !coveredActiveSessions.isEmpty else { return false }
 
-        lastSyncedFingerprint = fingerprint
-        if options.copyRemotePathToLocalClipboard {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(
-                sharedRemotePaths.map(\.shellEscaped).joined(separator: " "),
-                forType: .string
-            )
-            lastChangeCount = NSPasteboard.general.changeCount
-            log("copied remote path(s) to local clipboard for Claude Code")
-        }
+        lastSyncCache = SyncCache(
+            fingerprint: fingerprint,
+            remotePaths: sharedRemotePaths,
+            uploadedSessionKeys: knownSessionKeys
+        )
+
+        applyLocalPathClipboard(
+            sharedRemotePaths.map(\.shellEscaped).joined(separator: " "),
+            mode: localPathClipboardMode
+        )
 
         for uploaded in uploadedSessions {
             let active = uploaded.active
@@ -199,6 +224,43 @@ final class ClipboardSyncDaemon: @unchecked Sendable {
         }
 
         return true
+    }
+
+    private func applyLocalPathClipboard(_ text: String, mode: LocalPathClipboardMode) {
+        switch mode {
+        case .configured:
+            guard options.copyRemotePathToLocalClipboard else { return }
+            replaceLocalClipboard(with: text)
+            log("copied remote path(s) to local clipboard")
+        case .temporaryForPaste(let snapshot):
+            let pathChangeCount = replaceLocalClipboard(with: text)
+            log("temporarily copied remote path(s) for terminal paste")
+            replayCommandV()
+            scheduleClipboardRestore(snapshot, expectedChangeCount: pathChangeCount)
+        }
+    }
+
+    @discardableResult
+    private func replaceLocalClipboard(with text: String) -> Int {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        lastChangeCount = NSPasteboard.general.changeCount
+        return lastChangeCount
+    }
+
+    private func scheduleClipboardRestore(_ snapshot: PasteboardSnapshot, expectedChangeCount: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            guard let self else { return }
+            let pasteboard = NSPasteboard.general
+            guard pasteboard.changeCount == expectedChangeCount else {
+                self.lastChangeCount = pasteboard.changeCount
+                self.log("kept current clipboard because it changed after paste replay")
+                return
+            }
+            snapshot.restore(to: pasteboard)
+            self.lastChangeCount = pasteboard.changeCount
+            self.log("restored original local clipboard after terminal paste")
+        }
     }
 
     private func startPasteInterceptor() {
@@ -251,10 +313,14 @@ final class ClipboardSyncDaemon: @unchecked Sendable {
             return Unmanaged.passUnretained(event)
         }
 
+        let pasteboardSnapshot = PasteboardSnapshot.capture(from: .general)
         log("intercepted Cmd-V image paste in terminal app")
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            if self.syncCurrentClipboard(reason: "paste-intercept") {
+            if !self.syncCurrentClipboard(
+                reason: "paste-intercept",
+                localPathClipboardMode: .temporaryForPaste(pasteboardSnapshot)
+            ) {
                 self.replayCommandV()
             }
         }
@@ -304,13 +370,34 @@ final class ClipboardSyncDaemon: @unchecked Sendable {
 
     private func clipboardFingerprint(_ files: [ClipboardMaterializedFile]) -> String {
         files.map { file in
+            let ext = file.url.pathExtension.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if let digest = digestPrefix(for: file.url) {
+                return "\(digest):\(ext)"
+            }
             let values = try? file.url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
             return [
                 file.url.path,
+                ext,
                 String(values?.fileSize ?? -1),
                 String(values?.contentModificationDate?.timeIntervalSince1970 ?? 0)
             ].joined(separator: ":")
         }.joined(separator: "|")
+    }
+
+    private func sessionCacheKey(_ session: RemoteSSHSession) -> String {
+        [
+            session.destination,
+            session.port.map(String.init) ?? "",
+            session.identityFile ?? "",
+            session.configFile ?? "",
+            session.jumpHost ?? "",
+            session.controlPath ?? "",
+            session.useIPv4 ? "4" : "",
+            session.useIPv6 ? "6" : "",
+            session.forwardAgent ? "A" : "",
+            session.compressionEnabled ? "C" : "",
+            session.sshOptions.joined(separator: "\u{1f}")
+        ].joined(separator: "\u{1e}")
     }
 
     private func remotePaths(for fileURLs: [URL]) -> [String] {
@@ -333,6 +420,42 @@ final class ClipboardSyncDaemon: @unchecked Sendable {
         guard options.verbose else { return }
         let line = "[ssh-image-paste-daemon] \(message)\n"
         FileHandle.standardError.write(Data(line.utf8))
+    }
+}
+
+private struct PasteboardSnapshot {
+    private var items: [PasteboardItemSnapshot]
+
+    static func capture(from pasteboard: NSPasteboard) -> PasteboardSnapshot {
+        let items = (pasteboard.pasteboardItems ?? []).compactMap(PasteboardItemSnapshot.init)
+        return PasteboardSnapshot(items: items)
+    }
+
+    func restore(to pasteboard: NSPasteboard) {
+        pasteboard.clearContents()
+        guard !items.isEmpty else { return }
+        let pasteboardItems = items.map { itemSnapshot in
+            let item = NSPasteboardItem()
+            for representation in itemSnapshot.representations {
+                item.setData(representation.data, forType: representation.type)
+            }
+            return item
+        }
+        pasteboard.writeObjects(pasteboardItems)
+    }
+}
+
+private struct PasteboardItemSnapshot {
+    var representations: [(type: NSPasteboard.PasteboardType, data: Data)]
+
+    init?(_ item: NSPasteboardItem) {
+        let representations = item.types.compactMap { type in
+            item.data(forType: type).map { data in
+                (type: type, data: data)
+            }
+        }
+        guard !representations.isEmpty else { return nil }
+        self.representations = representations
     }
 }
 
@@ -360,12 +483,15 @@ func printUsageAndExit(_ code: Int32) -> Never {
     system clipboard through the remote helper or inline wl-copy/xclip fallback.
 
     Options:
-      --interval SECONDS     Clipboard polling interval. Default: 0.75.
+      --interval SECONDS     Clipboard polling interval. Default: 0.2.
       --remote-helper PATH   Remote helper path. Default: ~/.local/bin/ssh-clipboard-image-remote.py.
       --no-remote-helper     Use inline remote wl-copy/xclip/osascript script.
+      --local-path-clipboard
+                              Keep uploaded remote path(s) in the local clipboard.
       --no-local-path-clipboard
-                              Do not replace local clipboard with uploaded remote path(s).
-      --no-remote-clipboard  Only upload and local-copy paths; skip remote GUI clipboard writes.
+                              Do not keep remote path(s) in the local clipboard. Default.
+      --remote-clipboard     Write uploaded image(s) into the remote GUI clipboard. Default.
+      --no-remote-clipboard  Upload path(s) only; skip remote GUI clipboard writes.
       --tty-inject           Experimental: inject bracketed paste into detected ssh TTYs.
       --no-tty-inject        Disable experimental TTY injection. Default.
       --paste-intercept      Experimental: intercept Cmd-V in terminal apps, upload first,

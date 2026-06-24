@@ -37,11 +37,11 @@ macOS 图片剪贴板
   -> 写成本地临时图片
   -> 扫描当前活跃 SSH 会话
   -> scp 上传到远程 /tmp/ssh-image-paste-*.png
-  -> 把本地剪贴板换成远程路径
-  -> 终端里粘贴路径
+  -> 缓存远程路径，保留本机图片剪贴板
+  -> 终端 Cmd+V 时临时粘贴路径，然后恢复原剪贴板
 ```
 
-`--paste-intercept` 模式会拦截终端前台的 `Cmd+V`：先上传图片，再重放 `Cmd+V`。这样可以避免“用户按得太快，Claude Code 先读到图片剪贴板”的竞态。
+daemon 会先在后台预上传图片，降低真正粘贴时的等待。`--paste-intercept` 模式会拦截终端前台的 `Cmd+V`：如果图片已经预上传，就直接临时把剪贴板切成远程路径并重放 `Cmd+V`；如果还没上传完，则先补传，再粘贴路径。粘贴完成后会恢复原来的本机图片剪贴板。
 
 ## 编译
 
@@ -71,9 +71,10 @@ swift build -c release
 
 ```bash
 cd ssh-image-paste
-Scripts/install-launch-agent.sh '~/.local/bin/ssh-clipboard-image-remote.py' \
-  --paste-intercept --no-remote-clipboard --interval 0.2 --verbose
+Scripts/install-launch-agent.sh '~/.local/bin/ssh-clipboard-image-remote.py' --verbose
 ```
+
+安装脚本默认使用适合无 GUI SSH 主机的模式：`--paste-intercept --no-remote-clipboard --interval 0.2`。默认不会把本机剪贴板长期改成远程路径；只有终端粘贴瞬间会临时切换并自动恢复。
 
 这条命令会：
 
@@ -81,10 +82,10 @@ Scripts/install-launch-agent.sh '~/.local/bin/ssh-clipboard-image-remote.py' \
 2. 写入 `~/Library/LaunchAgents/io.github.ripley-xl.ssh-image-paste-daemon.plist`。
 3. 启动 `ssh-image-paste-daemon`。
 
-当前 daemon 路径是：
+当前 daemon 路径可用下面的命令查看。安装脚本会把 LaunchAgent 写成真实路径，避免 macOS 权限页把 `.build/release` 符号链接和真实 binary 混淆：
 
-```text
-$HOME/code/ssh-image-paste/.build/release/ssh-image-paste-daemon
+```bash
+realpath .build/release/ssh-image-paste-daemon
 ```
 
 查看运行状态：
@@ -106,13 +107,22 @@ tail -f /tmp/io.github.ripley-xl.ssh-image-paste-daemon.err.log
 - 输入监控：监听 `Cmd+V`。
 - 辅助功能：重放 `Cmd+V`。
 
-在系统设置里添加这个文件：
+先打开真实 binary 所在位置和两个权限页：
 
-```text
-$HOME/code/ssh-image-paste/.build/release/ssh-image-paste-daemon
+```bash
+REAL_BIN="$(realpath .build/release/ssh-image-paste-daemon)"
+open -R "$REAL_BIN"
+open 'x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent'
+open 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'
 ```
 
-如果添加窗口看不到 `.build`，按 `Cmd+Shift+G`，粘贴上面的完整路径，再回车。
+在“输入监控”和“辅助功能”两个页面都执行同一套操作：
+
+1. 如果已经有旧的 `ssh-image-paste-daemon`，先选中它，用 `-` 删除。
+2. 用 `+` 重新添加 Finder 里高亮的真实 binary，或直接把这个文件拖进列表。
+3. 打开 `ssh-image-paste-daemon` 右侧开关。
+
+如果添加窗口看不到 `.build`，按 `Cmd+Shift+G`，粘贴 `realpath` 输出的完整路径，再回车。
 
 授权后重启 daemon：
 
@@ -132,7 +142,7 @@ paste intercept enabled for terminal apps
 paste intercept unavailable; grant Accessibility/Input Monitoring if macOS prompts
 ```
 
-此时仍可用轮询模式：截图后等约 1 秒，剪贴板会变成 `/tmp/ssh-image-paste-*.png`，再按 `Cmd+V`。
+没有这两个权限时，daemon 仍可预上传图片，但不能拦截并重放 `Cmd+V`。如果你想使用旧的轮询路径模式，可以安装时额外加 `--local-path-clipboard`，让本机剪贴板长期变成 `/tmp/ssh-image-paste-*.png`。
 
 ## 远程部署
 
@@ -210,7 +220,8 @@ tail -n 80 /tmp/io.github.ripley-xl.ssh-image-paste-daemon.err.log
 
 ```text
 uploaded 1 file(s) to myserver via ttys001
-copied remote path(s) to local clipboard for Claude Code
+temporarily copied remote path(s) for terminal paste
+restored original local clipboard after terminal paste
 ```
 
 ## 排障
@@ -218,14 +229,6 @@ copied remote path(s) to local clipboard for Claude Code
 ### Claude Code 仍然报 `No image found in clipboard`
 
 这说明 Claude Code 还在读远程 GUI 剪贴板，没有收到远程路径。
-
-先看本地剪贴板：
-
-```bash
-pbpaste
-```
-
-如果不是 `/tmp/ssh-image-paste-*.png`，说明 daemon 还没处理完，或没检测到 SSH。
 
 检查活跃 SSH：
 
@@ -238,6 +241,8 @@ ps -axo pid=,pgid=,tpgid=,tty=,ucomm=,command= | rg '[s]sh'
 ```bash
 tail -n 120 /tmp/io.github.ripley-xl.ssh-image-paste-daemon.err.log
 ```
+
+正常情况下，`pbpaste` 不会长期显示 `/tmp/ssh-image-paste-*.png`。只有启用 `--local-path-clipboard` 时，本机剪贴板才会保留远程路径。
 
 ### `--paste-intercept` 没生效
 
@@ -253,7 +258,13 @@ tail -n 80 /tmp/io.github.ripley-xl.ssh-image-paste-daemon.err.log
 paste intercept unavailable
 ```
 
-去系统设置给 `ssh-image-paste-daemon` 添加“输入监控”和“辅助功能”权限，然后重启 daemon。
+确认添加的是真实路径，而不是 `.build/release` 符号链接下的旧条目：
+
+```bash
+realpath .build/release/ssh-image-paste-daemon
+```
+
+去系统设置给这个真实 binary 重新添加并打开“输入监控”和“辅助功能”权限，然后重启 daemon。建议先删除旧的同名 `ssh-image-paste-daemon` 条目，再重新添加，避免 macOS UI 显示同名但实际授权对象不一致。
 
 ### 远程 GUI 剪贴板写入失败
 

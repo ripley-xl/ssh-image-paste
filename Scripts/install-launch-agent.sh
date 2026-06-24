@@ -4,7 +4,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LABEL="io.github.ripley-xl.ssh-image-paste-daemon"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
-BIN="$ROOT/.build/release/ssh-image-paste-daemon"
 REMOTE_HELPER="~/.local/bin/ssh-clipboard-image-remote.py"
 
 if [[ $# -gt 0 && "$1" != --* ]]; then
@@ -12,7 +11,13 @@ if [[ $# -gt 0 && "$1" != --* ]]; then
   shift
 fi
 
-DAEMON_ARGS=("--remote-helper" "$REMOTE_HELPER" "$@")
+DAEMON_ARGS=(
+  "--remote-helper" "$REMOTE_HELPER"
+  "--paste-intercept"
+  "--no-remote-clipboard"
+  "--interval" "0.2"
+  "$@"
+)
 
 xml_escape() {
   local value="$1"
@@ -26,6 +31,7 @@ xml_escape() {
 
 cd "$ROOT"
 swift build -c release
+BIN="$(realpath "$ROOT/.build/release/ssh-image-paste-daemon")"
 
 mkdir -p "$HOME/Library/LaunchAgents"
 {
