@@ -1,0 +1,19 @@
+Sources/ssh-image-paste-daemon/main.swift
+  s_2d5144c9ade14a::t_35f09c3d46186c 252,309,314,373-384
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.10",
+  "base_commit_sha": "b28a968bd5f91eb5295127695bf27cea956fd02e",
+  "prompts": {},
+  "sessions": {
+    "s_2d5144c9ade14a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ef8b3-199f-7ad0-ad06-205feb662010",
+        "model": "gpt-5.5"
+      },
+      "human_author": "ripley <ripley_l@outlook.com>"
+    }
+  }
+}
