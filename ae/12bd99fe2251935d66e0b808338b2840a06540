@@ -1,0 +1,23 @@
+README.md
+  s_2d5144c9ade14a::t_0cb9dd6becb106 85,125
+Sources/ssh-image-paste-daemon/main.swift
+  s_2d5144c9ade14a::t_cd82d3603119e6 332-341,493,497-504
+Scripts/install-launch-agent.sh
+  s_2d5144c9ade14a::t_57e71edb556a42 35-38
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.10",
+  "base_commit_sha": "ae12bd99fe2251935d66e0b808338b2840a06540",
+  "prompts": {},
+  "sessions": {
+    "s_2d5144c9ade14a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ef8b3-199f-7ad0-ad06-205feb662010",
+        "model": "gpt-5.5"
+      },
+      "human_author": "ripley <ripley_l@outlook.com>"
+    }
+  }
+}
