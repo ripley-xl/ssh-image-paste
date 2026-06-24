@@ -32,6 +32,10 @@ xml_escape() {
 cd "$ROOT"
 swift build -c release
 BIN="$(realpath "$ROOT/.build/release/ssh-image-paste-daemon")"
+codesign --force --sign - \
+  --identifier "$LABEL" \
+  --requirements "=designated => identifier \"$LABEL\"" \
+  "$BIN"
 
 mkdir -p "$HOME/Library/LaunchAgents"
 {

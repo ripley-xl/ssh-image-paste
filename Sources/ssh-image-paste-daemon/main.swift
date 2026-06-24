@@ -329,6 +329,16 @@ final class ClipboardSyncDaemon: @unchecked Sendable {
         return nil
     }
 
+    fileprivate func handleEventTapDisabled(_ type: CGEventType) -> Unmanaged<CGEvent>? {
+        guard let eventTap else {
+            log("paste intercept event tap disabled before it was stored: \(type.rawValue)")
+            return nil
+        }
+        CGEvent.tapEnable(tap: eventTap, enable: true)
+        log("paste intercept event tap re-enabled after system disabled it: \(type.rawValue)")
+        return nil
+    }
+
     private func replayCommandV() {
         suppressNextCommandVPaste = true
         guard let source = CGEventSource(stateID: .hidSystemState),
@@ -480,12 +490,18 @@ private func pasteEventCallback(
     event: CGEvent,
     refcon: UnsafeMutableRawPointer?
 ) -> Unmanaged<CGEvent>? {
-    guard type == .keyDown,
-          let refcon else {
+    guard let refcon else {
         return Unmanaged.passUnretained(event)
     }
     let daemon = Unmanaged<ClipboardSyncDaemon>.fromOpaque(refcon).takeUnretainedValue()
-    return daemon.handleKeyDownEvent(event)
+    switch type {
+    case .keyDown:
+        return daemon.handleKeyDownEvent(event)
+    case .tapDisabledByTimeout, .tapDisabledByUserInput:
+        return daemon.handleEventTapDisabled(type)
+    default:
+        return Unmanaged.passUnretained(event)
+    }
 }
 
 func printUsageAndExit(_ code: Int32) -> Never {

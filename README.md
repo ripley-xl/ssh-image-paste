@@ -82,7 +82,7 @@ Scripts/install-launch-agent.sh '~/.local/bin/ssh-clipboard-image-remote.py' --v
 2. 写入 `~/Library/LaunchAgents/io.github.ripley-xl.ssh-image-paste-daemon.plist`。
 3. 启动 `ssh-image-paste-daemon`。
 
-当前 daemon 路径可用下面的命令查看。安装脚本会把 LaunchAgent 写成真实路径，避免 macOS 权限页把 `.build/release` 符号链接和真实 binary 混淆：
+当前 daemon 路径可用下面的命令查看。安装脚本会把 LaunchAgent 写成真实路径，并给 release binary 写入稳定的本地签名标识，避免 macOS 权限页把 `.build/release` 符号链接、重编译后的 CDHash 和真实 binary 混淆：
 
 ```bash
 realpath .build/release/ssh-image-paste-daemon
@@ -122,7 +122,7 @@ open 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibil
 2. 用 `+` 重新添加 Finder 里高亮的真实 binary，或直接把这个文件拖进列表。
 3. 打开 `ssh-image-paste-daemon` 右侧开关。
 
-如果添加窗口看不到 `.build`，按 `Cmd+Shift+G`，粘贴 `realpath` 输出的完整路径，再回车。
+如果添加窗口看不到 `.build`，按 `Cmd+Shift+G`，粘贴 `realpath` 输出的完整路径，再回车。首次切换到稳定签名版本时，建议删除旧的同名条目后重新添加；后续用安装脚本更新时不应再因为 CDHash 变化反复要求授权。
 
 授权后重启 daemon：
 
