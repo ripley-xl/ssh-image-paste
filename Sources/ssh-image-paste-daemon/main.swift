@@ -249,7 +249,7 @@ final class ClipboardSyncDaemon: @unchecked Sendable {
     }
 
     private func scheduleClipboardRestore(_ snapshot: PasteboardSnapshot, expectedChangeCount: Int) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.25) { [weak self] in
             guard let self else { return }
             let pasteboard = NSPasteboard.general
             guard pasteboard.changeCount == expectedChangeCount else {
@@ -306,10 +306,12 @@ final class ClipboardSyncDaemon: @unchecked Sendable {
         }
 
         guard isFrontmostTerminalLikeApp() else {
+            log("ignored Cmd-V outside terminal app: \(frontmostAppDescription())")
             return Unmanaged.passUnretained(event)
         }
 
         guard ClipboardImageMaterializer.pasteboardMayContainImageOrFile(.general) else {
+            log("ignored Cmd-V because clipboard is not an image/file: \(pasteboardTypeDescription())")
             return Unmanaged.passUnretained(event)
         }
 
@@ -366,6 +368,19 @@ final class ClipboardSyncDaemon: @unchecked Sendable {
         }
         let name = app.localizedName?.lowercased() ?? ""
         return ["warp", "wave", "iterm", "terminal", "ghostty"].contains(name)
+    }
+
+    private func frontmostAppDescription() -> String {
+        guard let app = NSWorkspace.shared.frontmostApplication else { return "unknown" }
+        return [
+            app.localizedName ?? "unknown",
+            app.bundleIdentifier ?? "no-bundle-id"
+        ].joined(separator: " / ")
+    }
+
+    private func pasteboardTypeDescription() -> String {
+        let types = NSPasteboard.general.types ?? []
+        return types.map(\.rawValue).prefix(8).joined(separator: ", ")
     }
 
     private func clipboardFingerprint(_ files: [ClipboardMaterializedFile]) -> String {
